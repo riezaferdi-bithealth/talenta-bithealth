@@ -3,16 +3,30 @@ from datetime import datetime, timedelta
 
 url = "https://hr.talenta.co/api/web/time-sheet/store"
 
-# Read configurations from file.txt
+# Read all lines, keep blank lines for block splitting
 with open('file.txt', 'r') as f:
-    lines = [line.strip() for line in f.readlines() if line.strip() and not line.strip().startswith('//')]
+    lines = [line.rstrip('\n') for line in f]
 
-# Parse configuration variables
+# Parse configuration variables until the first blank line (skip comments)
 config_vars = {}
-for line in lines:
+config_end_idx = 0
+for i, line in enumerate(lines):
+    if line.lstrip().startswith('//'):
+        continue  # skip comment lines
     if ':' in line:
         key, value = line.split(':', 1)
         config_vars[key.strip()] = value.strip()
+    if line.strip() == '' and config_vars:
+        config_end_idx = i
+        break
+
+# Check CSRF token and Cookie
+if not config_vars.get('X-Csrf-Token'):
+    print("Error: Missing X-Csrf-Token in configuration.")
+    exit(1)
+if not config_vars.get('Cookie'):
+    print("Error: Missing Cookie in configuration.")
+    exit(1)
 
 # Set up headers with configuration from file
 headers = {
@@ -29,17 +43,28 @@ headers = {
     "Cookie": config_vars.get('Cookie', '')
 }
 
-# Get task configurations (skip config variables)
-content = '\n'.join(lines[len(config_vars):])
+# Get only the blocks after config variables
+task_lines = lines[config_end_idx+1:]
 
-# Split content into separate configurations (separated by blank lines)
-configurations = [config.strip() for config in content.split('\n\n') if config.strip()]
+# Split blocks by blank line
+blocks = []
+block = []
+for line in task_lines:
+    if line.strip() == '':
+        if block:
+            blocks.append(block)
+            block = []
+    else:
+        block.append(line)
+if block:
+    blocks.append(block)
 
-for config in configurations:
-    # Split each configuration into lines
-    config_lines = config.split('\n')
-    
-    # Parse configuration
+for config_lines in blocks:
+    # Remove comment lines from each block
+    config_lines = [line for line in config_lines if not line.lstrip().startswith('//')]
+    if len(config_lines) < 6:
+        continue  # skip incomplete blocks
+
     task_id = int(config_lines[0].strip())
     activity = config_lines[1].strip()
     start_hour = config_lines[2].strip()
@@ -47,15 +72,11 @@ for config in configurations:
     start_date = datetime.strptime(config_lines[4].strip(), '%Y-%m-%d')
     end_date = datetime.strptime(config_lines[5].strip(), '%Y-%m-%d')
 
-    # Process each configuration
     print(f"\nProcessing task {task_id}: {activity}")
     for i in range((end_date - start_date).days + 1):
         day = start_date + timedelta(days=i)
-
-        # Skip weekends: Saturday (5) and Sunday (6)
         if day.weekday() > 4:
             continue
-
         date_str = day.strftime("%Y-%m-%d")
         data = {
             "task_id": task_id,
@@ -63,9 +84,7 @@ for config in configurations:
             "start_time": f"{date_str} {start_hour}",
             "end_time": f"{date_str} {end_hour}"
         }
-
         response = requests.post(url, headers=headers, json=data)
-
         if response.status_code == 200:
             print(f"[✓] Submitted for {date_str}")
         else:
